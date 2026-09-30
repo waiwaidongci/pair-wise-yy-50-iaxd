@@ -8,6 +8,9 @@ import { useImpositionStore } from '../stores/imposition'
 const store = useImpositionStore()
 const errors = computed(() => store.validations.filter((item) => item.severity === '错误').length)
 const pendingProof = computed(() => store.proofs.find((proof) => proof.decision === '待决定'))
+const affectedCount = computed(() => store.affectedTaskIds.length)
+const pendingReviewCount = computed(() => store.tasks.filter((task) => task.reviewStatus === 'pending_review').length)
+const activeLeaseCount = computed(() => store.tasks.filter((task) => task.lease?.holderId === store.stationId).length)
 </script>
 
 <template>
@@ -21,7 +24,8 @@ const pendingProof = computed(() => store.proofs.find((proof) => proof.decision 
       <article class="metric"><span>页面文件</span><strong>{{ store.pages.length }}</strong><small>{{ store.positions.length }} 个已排版位</small></article>
       <article class="metric"><span>预检错误</span><strong class="error">{{ errors }}</strong><small>必须处理后方可锁定</small></article>
       <article class="metric"><span>打样轮次</span><strong>{{ store.proofs.length }}</strong><small>当前 ΔE {{ pendingProof?.deltaE ?? '—' }}</small></article>
-      <article class="metric"><span>待恢复导出</span><strong>{{ store.tasks.filter((task) => task.resumable && task.status !== '已完成').length }}</strong><small>断点可继续</small></article>
+      <article class="metric"><span>依据受影响</span><strong :class="{ warn: affectedCount > 0 }">{{ affectedCount }}</strong><small>旧分片已失效，需重试</small></article>
+      <article class="metric"><span>待复核任务</span><strong :class="{ error: pendingReviewCount > 0 }">{{ pendingReviewCount }}</strong><small>缺少依据，需补充</small></article>
     </div>
 
     <div class="overview-grid">
@@ -56,11 +60,15 @@ const pendingProof = computed(() => store.proofs.find((proof) => proof.decision 
           </div>
         </section>
         <section class="panel export-mini">
-          <div class="panel-head"><h3>导出任务</h3></div>
+          <div class="panel-head"><h3>导出任务</h3><Button label="全部" text size="small" @click="$router.push('/exports')" /></div>
           <div v-for="task in store.tasks" :key="task.id">
             <div><span>{{ task.name }}</span><strong>{{ task.progress }}%</strong></div>
             <ProgressBar :value="task.progress" :showValue="false" :style="{ height: '7px' }" />
-            <small>{{ task.status }} · {{ task.updatedAt }}</small>
+            <small>
+              <Tag :value="task.status" :severity="task.status === '已完成' ? 'success' : task.status === '已中断' ? 'danger' : task.status === '生成中' ? 'warn' : task.status === '待复核' ? 'danger' : 'info'" />
+              <template v-if="task.lease"> · <i class="pi pi-lock" />{{ task.lease.holderName }}</template>
+              <template v-if="task.basis"> · <i class="pi pi-bookmark" />{{ task.basis.revision }}</template>
+            </small>
           </div>
         </section>
       </aside>
