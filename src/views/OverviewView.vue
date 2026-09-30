@@ -4,10 +4,13 @@ import Button from 'primevue/button'
 import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import { useImpositionStore } from '../stores/imposition'
+import { useExportTasks } from '../composables/useExportTasks'
 
 const store = useImpositionStore()
+const { tasks } = useExportTasks()
 const errors = computed(() => store.validations.filter((item) => item.severity === '错误').length)
 const pendingProof = computed(() => store.proofs.find((proof) => proof.decision === '待决定'))
+const resumable = computed(() => tasks.value.filter((task) => task.resumable && task.status !== '已完成').length)
 </script>
 
 <template>
@@ -21,7 +24,7 @@ const pendingProof = computed(() => store.proofs.find((proof) => proof.decision 
       <article class="metric"><span>页面文件</span><strong>{{ store.pages.length }}</strong><small>{{ store.positions.length }} 个已排版位</small></article>
       <article class="metric"><span>预检错误</span><strong class="error">{{ errors }}</strong><small>必须处理后方可锁定</small></article>
       <article class="metric"><span>打样轮次</span><strong>{{ store.proofs.length }}</strong><small>当前 ΔE {{ pendingProof?.deltaE ?? '—' }}</small></article>
-      <article class="metric"><span>待恢复导出</span><strong>{{ store.tasks.filter((task) => task.resumable && task.status !== '已完成').length }}</strong><small>断点可继续</small></article>
+      <article class="metric"><span>待恢复导出</span><strong>{{ resumable }}</strong><small>断点可继续</small></article>
     </div>
 
     <div class="overview-grid">
@@ -57,7 +60,7 @@ const pendingProof = computed(() => store.proofs.find((proof) => proof.decision 
         </section>
         <section class="panel export-mini">
           <div class="panel-head"><h3>导出任务</h3></div>
-          <div v-for="task in store.tasks" :key="task.id">
+          <div v-for="task in tasks" :key="task.id">
             <div><span>{{ task.name }}</span><strong>{{ task.progress }}%</strong></div>
             <ProgressBar :value="task.progress" :showValue="false" :style="{ height: '7px' }" />
             <small>{{ task.status }} · {{ task.updatedAt }}</small>

@@ -1,11 +1,11 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { captureBasis, type BasisInput, type Decision, type ExportBasis } from '../api/exportModel'
 
 export type Page = { pageNo: number; name: string; width: number; height: number; bleed: number; content: string }
 export type Position = { id: string; pageNo: number; x: number; y: number; rotation: number; front: boolean }
 export type Validation = { id: string; severity: '错误' | '警告'; pageNo?: number; title: string; detail: string }
-export type Proof = { id: string; round: number; date: string; sample: string; deltaE: number; feedback: string; correction: string; owner: string; decision: '待决定' | '通过' | '退回' }
-export type ExportTask = { id: string; name: string; progress: number; status: '排队中' | '生成中' | '已完成' | '已中断'; updatedAt: string; resumable: boolean }
+export type Proof = { id: string; round: number; date: string; sample: string; deltaE: number; feedback: string; correction: string; owner: string; decision: Decision }
 
 export const sheetSpec = {
   width: 720,
@@ -44,18 +44,44 @@ const seedProofs: Proof[] = [
   { id: 'PRF-02', round: 2, date: '2026-09-25', sample: '数字样张 v2', deltaE: 1.9, feedback: '整体色差改善，P7 出血仍不足。', correction: '重排 P7 版位并增加 2mm 出血。', owner: '林青 / 拼版', decision: '待决定' },
 ]
 
-const seedTasks: ExportTask[] = [
-  { id: 'EXP-0925-01', name: '印刷交付包 · PDF/X-4', progress: 72, status: '已中断', updatedAt: '09-25 16:42', resumable: true },
-  { id: 'EXP-0925-02', name: '数字样张低分辨率预览', progress: 100, status: '已完成', updatedAt: '09-25 15:18', resumable: false },
-]
+const PERSIST_KEY = 'print-imposition-v2'
+const LEGACY_KEY = 'print-imposition-v1'
+
+function restore(): { pages: Page[]; positions: Position[]; proofs: Proof[]; revision: string; locked: boolean } | null {
+  const raw = localStorage.getItem(PERSIST_KEY)
+  if (raw) {
+    try {
+      return JSON.parse(raw)
+    } catch {
+      // 落到旧版升级
+    }
+  }
+  // 旧数据升级：v1 中的任务由 exportServer 启动迁移；这里剥离 tasks，仅保留编辑数据
+  const legacyRaw = localStorage.getItem(LEGACY_KEY)
+  if (legacyRaw) {
+    try {
+      const legacy = JSON.parse(legacyRaw)
+      const migrated = {
+        pages: legacy.pages ?? structuredClone(seedPages),
+        positions: legacy.positions ?? structuredClone(seedPositions),
+        proofs: legacy.proofs ?? structuredClone(seedProofs),
+        revision: legacy.revision ?? 'R6',
+        locked: legacy.locked ?? false,
+      }
+      localStorage.setItem(PERSIST_KEY, JSON.stringify(migrated))
+      return migrated
+    } catch {
+      // 损坏数据回退种子
+    }
+  }
+  return null
+}
 
 export const useImpositionStore = defineStore('imposition', () => {
-  const saved = localStorage.getItem('print-imposition-v1')
-  const restored = saved ? JSON.parse(saved) : null
+  const restored = restore()
   const pages = ref<Page[]>(restored?.pages ?? structuredClone(seedPages))
   const positions = ref<Position[]>(restored?.positions ?? structuredClone(seedPositions))
   const proofs = ref<Proof[]>(restored?.proofs ?? structuredClone(seedProofs))
-  const tasks = ref<ExportTask[]>(restored?.tasks ?? structuredClone(seedTasks))
   const side = ref<'front' | 'back'>('front')
   const zoom = ref(72)
   const revision = ref(restored?.revision ?? 'R6')
@@ -84,9 +110,25 @@ export const useImpositionStore = defineStore('imposition', () => {
     return issues
   })
 
-  watch([pages, positions, proofs, tasks, revision, locked], () => {
-    localStorage.setItem('print-imposition-v1', JSON.stringify({ pages: pages.value, positions: positions.value, proofs: proofs.value, tasks: tasks.value, revision: revision.value, locked: locked.value }))
+  watch([pages, positions, proofs, revision, locked], () => {
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({ pages: pages.value, positions: positions.value, proofs: proofs.value, revision: revision.value, locked: locked.value }))
   }, { deep: true })
+
+  /** 捕获当前依据的输入：导出任务发起 / 重试 / 对账共用同一份事实 */
+  function basisInput(): BasisInput {
+    return {
+      revision: revision.value,
+      positions: positions.value,
+      pages: pages.value,
+      proofs: proofs.value,
+      validations: validations.value,
+      locked: locked.value,
+      createdAt: new Date().toISOString(),
+    }
+  }
+
+  /** 当前时刻的依据快照（只读展示用；发起任务时由服务端再次固化） */
+  const currentBasis = computed<ExportBasis>(() => captureBasis(basisInput()))
 
   function updatePosition(id: string, patch: Partial<Position>) {
     if (locked.value) return
@@ -117,14 +159,9 @@ export const useImpositionStore = defineStore('imposition', () => {
     locked.value = false
   }
 
-  function resumeTask(id: string) {
-    const task = tasks.value.find((item) => item.id === id)
-    if (task && task.resumable) {
-      task.status = '生成中'
-      task.progress = Math.max(task.progress, 10)
-      task.updatedAt = '刚刚'
-    }
+  return {
+    pages, positions, proofs, side, zoom, revision, locked, selectedPosition, selectedProof,
+    validations, basisInput, currentBasis,
+    updatePosition, addPosition, updateProof, createProof, lockBaseline, unlock,
   }
-
-  return { pages, positions, proofs, tasks, side, zoom, revision, locked, selectedPosition, selectedProof, validations, updatePosition, addPosition, updateProof, createProof, lockBaseline, unlock, resumeTask }
 })

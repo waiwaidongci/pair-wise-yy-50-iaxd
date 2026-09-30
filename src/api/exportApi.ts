@@ -1,32 +1,60 @@
-import axios, { type AxiosAdapter } from 'axios'
-import type { ExportTask } from '../stores/imposition'
+import axios, { AxiosError } from 'axios'
+import { exportAdapter } from './exportServer'
+import type { AffectedTask, BasisInput, ExportBasis, ExportTask } from './exportModel'
 
-let tasks: ExportTask[] = [
-  { id: 'EXP-0925-01', name: '印刷交付包 · PDF/X-4', progress: 72, status: '已中断', updatedAt: '09-25 16:42', resumable: true },
-  { id: 'EXP-0925-02', name: '数字样张低分辨率预览', progress: 100, status: '已完成', updatedAt: '09-25 15:18', resumable: false },
-]
+const client = axios.create({
+  adapter: exportAdapter,
+  // 模拟通道始终收发 JSON，避免 axios 默认把对象 body 转成 FormData
+  transformRequest: [(data) => JSON.stringify(data)],
+  headers: { 'Content-Type': 'application/json' },
+})
 
-const adapter: AxiosAdapter = async (config) => {
-  await new Promise((resolve) => setTimeout(resolve, 160))
-  if (config.url === '/api/print/export-tasks' && config.method === 'get') {
-    return { data: structuredClone(tasks), status: 200, statusText: 'OK', headers: {}, config }
+export class ExportClientError extends Error {
+  constructor(
+    public code: string,
+    public status: number,
+    message: string,
+  ) {
+    super(message)
   }
-  if (config.url?.match(/^\/api\/print\/export-tasks\/[^/]+\/resume$/) && config.method === 'post') {
-    const id = config.url.split('/').at(-2)
-    const task = tasks.find((item) => item.id === id)
-    if (task && task.resumable) {
-      task.status = '生成中'
-      task.progress = Math.max(task.progress, 12)
-      task.updatedAt = '刚刚'
-    }
-    return { data: structuredClone(task), status: 200, statusText: 'OK', headers: {}, config }
-  }
-  return { data: null, status: 404, statusText: 'Not Found', headers: {}, config }
 }
 
-const client = axios.create({ adapter })
+async function call<T>(request: () => Promise<{ data: T | { code: string; message: string }; status: number }>): Promise<T> {
+  try {
+    const response = await request()
+    if (response.status >= 400) {
+      const error = response.data as { code: string; message: string }
+      throw new ExportClientError(error.code, response.status, error.message)
+    }
+    return response.data as T
+  } catch (error) {
+    if (error instanceof ExportClientError) throw error
+    const axiosError = error as AxiosError<{ code: string; message: string }>
+    if (axiosError.response) {
+      throw new ExportClientError(axiosError.response.data.code, axiosError.response.status, axiosError.response.data.message)
+    }
+    throw new ExportClientError('NETWORK', 0, axiosError.message || '网络异常')
+  }
+}
+
+export type ClaimResult = { task: ExportTask; lease?: ExportTask['lease']; reason?: string }
+export type ReconcileResult = { current: ExportBasis; affected: AffectedTask[] }
 
 export const exportApi = {
-  list: () => client.get<ExportTask[]>('/api/print/export-tasks'),
-  resume: (id: string) => client.post<ExportTask>(`/api/print/export-tasks/${id}/resume`),
+  list: () => call<ExportTask[]>(() => client.get('/api/print/export-tasks')),
+  create: (name: string, basisInput: BasisInput) =>
+    call<ExportTask>(() => client.post('/api/print/export-tasks', { name, basisInput })),
+  claim: (id: string, station: string) => call<ClaimResult>(() => client.post(`/api/print/export-tasks/${id}/claim`, { station })),
+  heartbeat: (id: string, station: string, token: string) =>
+    call<ExportTask>(() => client.post(`/api/print/export-tasks/${id}/heartbeat`, { station, token })),
+  reportProgress: (id: string, station: string, token: string, shardId: string) =>
+    call<ExportTask>(() => client.post(`/api/print/export-tasks/${id}/progress`, { station, token, shardId })),
+  release: (id: string, station: string, token: string) =>
+    call<ExportTask>(() => client.post(`/api/print/export-tasks/${id}/release`, { station, token })),
+  retry: (id: string, basisInput: BasisInput) =>
+    call<ExportTask>(() => client.post(`/api/print/export-tasks/${id}/retry`, { basisInput })),
+  confirmBasis: (id: string, basisInput: BasisInput) =>
+    call<ExportTask>(() => client.post(`/api/print/export-tasks/${id}/confirm-basis`, { basisInput })),
+  reconcile: (basisInput: BasisInput) =>
+    call<ReconcileResult>(() => client.post('/api/print/export-reconcile', { basisInput })),
 }
